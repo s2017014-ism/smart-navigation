@@ -45,6 +45,7 @@ class _NavigationPageState extends State<NavigationPage> {
   LatLng endPosition = const LatLng(22.188, 113.535);
   String status = '選擇旅遊目的、時間和地點數後推薦行程';
   bool loading = false;
+  bool generatingPath = false;
   bool preferBus = false;
   bool selectingStart = true;
   bool tourMode = true;
@@ -55,6 +56,8 @@ class _NavigationPageState extends State<NavigationPage> {
     'architecture': '建築',
     'history': '歷史',
   };
+  static const minimumTourThinkingDuration = Duration(seconds: 5);
+  static const pathGenerationDisplayDuration = Duration(milliseconds: 700);
 
   Uri _serverUri(String path) {
     final baseUri = Uri.parse(apiBaseUrl.text.trim());
@@ -69,6 +72,7 @@ class _NavigationPageState extends State<NavigationPage> {
     routeInstructions.clear();
     routeOptions.clear();
     recommendedPlaces.clear();
+    generatingPath = false;
   }
 
   void _selectMapTarget(bool isStart) {
@@ -169,9 +173,10 @@ class _NavigationPageState extends State<NavigationPage> {
       setState(() => status = '請至少選擇一種旅遊目的');
       return;
     }
+    final planningStartedAt = DateTime.now();
     setState(() {
       loading = true;
-      status = '正在依旅遊時間和偏好安排景點...';
+      status = '正在思考並安排景點，請稍候...';
       _clearPlan();
     });
     try {
@@ -196,20 +201,38 @@ class _NavigationPageState extends State<NavigationPage> {
           .toList();
       final geojson = data['geojson'] as Map<String, dynamic>;
       final features = geojson['features'] as List;
+      final thinkingTime = DateTime.now().difference(planningStartedAt);
+      if (thinkingTime < minimumTourThinkingDuration) {
+        await Future<void>.delayed(minimumTourThinkingDuration - thinkingTime);
+      }
+      if (!mounted) return;
       setState(() {
         recommendedPlaces.addAll(places);
+        loading = false;
+        generatingPath = true;
+        status = '行程已安排，正在產生地圖路線...';
+      });
+      await Future<void>.delayed(pathGenerationDisplayDuration);
+      if (!mounted) return;
+      setState(() {
         routeLines.addAll(_polylines(features));
         routeInstructions.addAll(features.map((feature) =>
             Map<String, dynamic>.from(
                 (feature as Map<String, dynamic>)['properties'] as Map)));
+        generatingPath = false;
         status = '時間內安排 ${places.length}/$requestedPlaceCount 個地點 · 步行約 '
             '${(summary['travel_minutes'] as num).toInt()} 分鐘 · '
             '參觀約 ${(summary['visit_minutes'] as num).toInt()} 分鐘';
       });
     } catch (error) {
-      setState(() => status = '錯誤：$error');
+      if (mounted) setState(() => status = '錯誤：$error');
     } finally {
-      setState(() => loading = false);
+      if (mounted) {
+        setState(() {
+          loading = false;
+          generatingPath = false;
+        });
+      }
     }
   }
 
@@ -338,9 +361,15 @@ class _NavigationPageState extends State<NavigationPage> {
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
-                  onPressed: loading ? null : planTour,
+                  onPressed: loading || generatingPath ? null : planTour,
                   icon: const Icon(Icons.auto_awesome),
-                  label: Text(loading ? '安排中...' : '推薦我的行程'),
+                  label: Text(
+                    loading
+                        ? '正在思考，請稍候...'
+                        : generatingPath
+                            ? '正在產生路線...'
+                            : '推薦我的行程',
+                  ),
                 ),
               ),
             ] else ...[
@@ -382,7 +411,19 @@ class _NavigationPageState extends State<NavigationPage> {
             ],
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 6),
-              child: Text(status),
+              child: Row(
+                children: [
+                  if (loading || generatingPath) ...[
+                    const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(child: Text(status)),
+                ],
+              ),
             ),
             if (recommendedPlaces.isNotEmpty) ...[
               const Text('推薦地點｜各項分數為公開地圖標籤符合度，並非評價',
