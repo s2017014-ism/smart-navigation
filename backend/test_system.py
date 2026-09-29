@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from . import graph_builder
 from .main import app, transit_dataset
+from .router import path_coordinates
 from .transit import (
     available_transit_graph,
     build_transit_graph,
@@ -17,7 +18,12 @@ def test_load_graph_uses_graphml_without_osmnx(tmp_path: Path, monkeypatch) -> N
     graph = nx.MultiDiGraph()
     graph.add_node("start", x=113.5, y=22.2)
     graph.add_node("end", x=113.6, y=22.3)
-    graph.add_edge("start", "end", length=100)
+    graph.add_edge(
+        "start",
+        "end",
+        length=100,
+        geometry="LINESTRING (113.5 22.2, 113.55 22.25, 113.6 22.3)",
+    )
     graph_path = tmp_path / "network.graphml"
     nx.write_graphml(graph, graph_path)
     monkeypatch.setattr(graph_builder, "ox", None)
@@ -27,6 +33,11 @@ def test_load_graph_uses_graphml_without_osmnx(tmp_path: Path, monkeypatch) -> N
     assert loaded_graph.number_of_nodes() == 2
     assert loaded_graph.number_of_edges() == 1
     assert loaded_graph.nodes["start"]["x"] == 113.5
+    assert path_coordinates(loaded_graph, ["start", "end"]) == [
+        [113.5, 22.2],
+        [113.55, 22.25],
+        [113.6, 22.3],
+    ]
 
 
 def test_health() -> None:

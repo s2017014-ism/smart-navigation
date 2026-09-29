@@ -20,7 +20,14 @@ hidden_imports = [
     "backend.router",
     "backend.transit",
 ]
-for package in ("fastapi", "uvicorn", "networkx", "httpx", "pydantic"):
+for package in (
+    "fastapi",
+    "uvicorn",
+    "networkx",
+    "httpx",
+    "pydantic",
+    "shapely",
+):
     hidden_imports.extend(collect_submodules(package))
 
 analysis = Analysis(

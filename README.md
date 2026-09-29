@@ -179,11 +179,13 @@ firewall. The app's **後端伺服器網址** field can be changed at runtime.
 
 ## Release downloads
 
-Push a version tag such as `v1.4.2` to build Windows x64, Linux x64, Intel
+Push a version tag such as `v1.4.3` to build Windows x64, Linux x64, Intel
 macOS (x86_64), Android ARM, and Android x86_64 APK packages in GitHub Actions.
-The workflow publishes all five files as assets on a GitHub Release. Desktop
-packages include the automatically started local backend; Android still
-requires an accessible backend. No hosted backend is included.
+The tag-triggered workflow publishes all five files as assets on a GitHub
+Release. A separate **Windows-only release** workflow can publish a Windows
+update without changing the existing Linux, macOS, or Android release assets.
+Desktop packages include the automatically started local backend; Android
+still requires an accessible backend. No hosted backend is included.
 
 ## Key Features Implemented
 

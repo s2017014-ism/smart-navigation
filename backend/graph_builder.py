@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import networkx as nx
+from shapely import wkt
 
 try:
     import osmnx as ox
@@ -38,7 +39,12 @@ def load_graph(path: Path) -> nx.MultiDiGraph:
     if path.exists():
         if ox is not None:
             return ox.load_graphml(path)
-        return nx.read_graphml(path, force_multigraph=True)
+        graph = nx.read_graphml(path, force_multigraph=True)
+        for _, _, data in graph.edges(data=True):
+            geometry = data.get("geometry")
+            if isinstance(geometry, str):
+                data["geometry"] = wkt.loads(geometry)
+        return graph
     return build_fallback_graph()
 
 
