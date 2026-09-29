@@ -123,10 +123,11 @@ backend with `--host 0.0.0.0`, and allow port 8000 through the computer firewall
 
 ## Release downloads
 
-Push a version tag such as `v1.0.0` to build Windows x64, Linux x64, and Android
-APK packages in GitHub Actions. The workflow publishes all three files as assets
-on a GitHub Release. The app requires the FastAPI backend to be running; the
-release contains the Flutter clients, not a hosted backend.
+Push a version tag such as `v1.3.2` to build Windows x64, Linux x64, Intel
+macOS (x86_64), Android ARM, and Android x86_64 APK packages in GitHub Actions.
+The workflow publishes all five files as assets on a GitHub Release. The app
+requires the FastAPI backend to be running; the release contains the Flutter
+clients, not a hosted backend.
 
 ## Key Features Implemented
 

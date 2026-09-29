@@ -25,11 +25,11 @@ jobs:
         shell: pwsh
         run: |
           Compress-Archive -Path frontend/build/windows/x64/runner/Release/* `
-            -DestinationPath macau-smart-navigation-windows-x64.zip
+            -DestinationPath smart-navigation-windows-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: windows-release
-          path: macau-smart-navigation-windows-x64.zip
+          path: smart-navigation-windows-x64.zip
 
   linux:
     runs-on: ubuntu-24.04
@@ -49,12 +49,37 @@ jobs:
         run: flutter build linux --release
       - name: Package Linux app
         run: |
-          tar -czf macau-smart-navigation-linux-x64.tar.gz \
+          tar -czf smart-navigation-linux-x64.tar.gz \
             -C frontend/build/linux/x64/release/bundle .
       - uses: actions/upload-artifact@v4
         with:
           name: linux-release
-          path: macau-smart-navigation-linux-x64.tar.gz
+          path: smart-navigation-linux-x64.tar.gz
+
+  macos:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+          cache-key: flutter-macos-intel
+      - name: Build Intel macOS app
+        working-directory: frontend
+        run: flutter build macos --release
+      - name: Package Intel macOS app
+        shell: bash
+        run: |
+          app_path="$(find frontend/build/macos/Build/Products/Release \
+            -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app_path"
+          ditto -c -k --sequesterRsrc --keepParent "$app_path" \
+            smart-navigation-macos-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: smart-navigation-macos-x86_64.zip
 
   android:
     runs-on: ubuntu-latest
@@ -71,14 +96,35 @@ jobs:
       - name: Rename Android APK
         run: |
           cp frontend/build/app/outputs/flutter-apk/app-release.apk \
-            macau-smart-navigation-android.apk
+            smart-navigation-android.apk
       - uses: actions/upload-artifact@v4
         with:
           name: android-release
-          path: macau-smart-navigation-android.apk
+          path: smart-navigation-android.apk
+
+  android-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+          cache-key: flutter-android-x86_64
+      - name: Build Android x86_64 APK
+        working-directory: frontend
+        run: flutter build apk --release --target-platform android-x64
+      - name: Rename Android x86_64 APK
+        run: |
+          cp frontend/build/app/outputs/flutter-apk/app-release.apk \
+            smart-navigation-android-x86_64.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-x86_64-release
+          path: smart-navigation-android-x86_64.apk
 
   release:
-    needs: [windows, linux, android]
+    needs: [windows, linux, macos, android, android-x86_64]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
