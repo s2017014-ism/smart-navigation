@@ -35,8 +35,10 @@ def build_fallback_graph() -> nx.MultiDiGraph:
 
 
 def load_graph(path: Path) -> nx.MultiDiGraph:
-    if path.exists() and ox is not None:
-        return ox.load_graphml(path)
+    if path.exists():
+        if ox is not None:
+            return ox.load_graphml(path)
+        return nx.read_graphml(path, force_multigraph=True)
     return build_fallback_graph()
 
 

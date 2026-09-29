@@ -1,14 +1,32 @@
 from datetime import datetime
 from pathlib import Path
 
+import networkx as nx
 from fastapi.testclient import TestClient
 
+from . import graph_builder
 from .main import app, transit_dataset
 from .transit import (
     available_transit_graph,
     build_transit_graph,
     load_transit_dataset,
 )
+
+
+def test_load_graph_uses_graphml_without_osmnx(tmp_path: Path, monkeypatch) -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node("start", x=113.5, y=22.2)
+    graph.add_node("end", x=113.6, y=22.3)
+    graph.add_edge("start", "end", length=100)
+    graph_path = tmp_path / "network.graphml"
+    nx.write_graphml(graph, graph_path)
+    monkeypatch.setattr(graph_builder, "ox", None)
+
+    loaded_graph = graph_builder.load_graph(graph_path)
+
+    assert loaded_graph.number_of_nodes() == 2
+    assert loaded_graph.number_of_edges() == 1
+    assert loaded_graph.nodes["start"]["x"] == 113.5
 
 
 def test_health() -> None:

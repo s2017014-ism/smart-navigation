@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -31,7 +32,7 @@ class _NavigationPageState extends State<NavigationPage> {
   final apiBaseUrl = TextEditingController(
     text: defaultTargetPlatform == TargetPlatform.android
         ? 'http://10.0.2.2:8000'
-        : 'http://localhost:8000',
+        : 'http://127.0.0.1:8000',
   );
   final routeLines = <Polyline>[];
   final routeInstructions = <Map<String, dynamic>>[];
@@ -49,6 +50,10 @@ class _NavigationPageState extends State<NavigationPage> {
   bool preferBus = false;
   bool selectingStart = true;
   bool tourMode = true;
+  bool backendStarting = false;
+  bool backendReady = false;
+  bool _disposed = false;
+  Process? _ownedBackend;
 
   static const purposes = <String, String>{
     'culture': '文化',
@@ -59,12 +64,174 @@ class _NavigationPageState extends State<NavigationPage> {
   static const minimumTourThinkingDuration = Duration(seconds: 5);
   static const pathGenerationDisplayDuration = Duration(milliseconds: 700);
 
+  bool get _isDesktopPlatform =>
+      !kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
+
+  bool get _isFlutterTest => Platform.environment.containsKey('FLUTTER_TEST');
+
+  bool get _backendCanPlan =>
+      !_isDesktopPlatform || !_usesLocalBackend || backendReady;
+
+  @override
+  void initState() {
+    super.initState();
+    if (_isDesktopPlatform && !_isFlutterTest && _usesLocalBackend) {
+      backendStarting = true;
+      status = '正在啟動本機路線服務...';
+      WidgetsBinding.instance.addPostFrameCallback((_) => _startLocalBackend());
+    } else {
+      backendReady = true;
+    }
+  }
+
+  bool get _usesLocalBackend {
+    final uri = Uri.tryParse(apiBaseUrl.text.trim());
+    return uri != null &&
+        uri.hasScheme &&
+        uri.scheme == 'http' &&
+        (uri.host == 'localhost' || uri.host == '127.0.0.1') &&
+        uri.port == 8000;
+  }
+
   Uri _serverUri(String path) {
     final baseUri = Uri.parse(apiBaseUrl.text.trim());
     if (!baseUri.hasScheme || !baseUri.hasAuthority) {
       throw const FormatException('請輸入有效的後端網址，例如 http://192.168.1.10:8000');
     }
     return baseUri.resolve(path);
+  }
+
+  Future<bool> _isLocalBackendReady() async {
+    try {
+      final response = await http
+          .get(_serverUri('/health'))
+          .timeout(const Duration(seconds: 2));
+      if (response.statusCode != 200) return false;
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) return false;
+      final placeCount = decoded['place_count'];
+      return decoded['graph_loaded'] == true &&
+          decoded['transit_loaded'] == true &&
+          placeCount is num &&
+          placeCount > 0;
+    } on Exception {
+      return false;
+    }
+  }
+
+  Directory? _findProjectRoot() {
+    final startingPoints = [
+      Directory.current.absolute,
+      File(Platform.resolvedExecutable).parent.absolute,
+    ];
+    for (final startingPoint in startingPoints) {
+      var directory = startingPoint;
+      while (true) {
+        if (File('${directory.path}${Platform.pathSeparator}backend'
+                '${Platform.pathSeparator}main.py')
+            .existsSync()) {
+          return directory;
+        }
+        final parent = directory.parent;
+        if (parent.path == directory.path) break;
+        directory = parent;
+      }
+    }
+    return null;
+  }
+
+  Future<void> _startLocalBackend() async {
+    if (!_usesLocalBackend || _disposed) {
+      if (mounted) setState(() => backendStarting = false);
+      return;
+    }
+    try {
+      if (await _isLocalBackendReady()) {
+        if (mounted) {
+          setState(() {
+            backendReady = true;
+            backendStarting = false;
+            status = '本機路線服務已就緒';
+          });
+        }
+        return;
+      }
+
+      final executableDirectory =
+          File(Platform.resolvedExecutable).parent.absolute;
+      final binaryName = Platform.isWindows
+          ? 'smart-navigation-backend.exe'
+          : 'smart-navigation-backend';
+      final bundledBackend = File(
+          '${executableDirectory.path}${Platform.pathSeparator}$binaryName');
+
+      late final Process process;
+      if (bundledBackend.existsSync()) {
+        process = await Process.start(
+          bundledBackend.path,
+          const ['--host', '127.0.0.1', '--port', '8000'],
+          workingDirectory: executableDirectory.path,
+        );
+      } else if (kDebugMode) {
+        final projectRoot = _findProjectRoot();
+        if (projectRoot == null) {
+          throw Exception('找不到本機後端檔案，請重新安裝桌面版 App。');
+        }
+        process = await Process.start(
+          Platform.isWindows ? 'python' : 'python3',
+          const [
+            '-m',
+            'uvicorn',
+            'backend.main:app',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            '8000',
+          ],
+          workingDirectory: projectRoot.path,
+        );
+      } else {
+        throw Exception('找不到隨 App 安裝的本機後端，請重新安裝桌面版 App。');
+      }
+
+      if (_disposed) {
+        process.kill();
+        return;
+      }
+      _ownedBackend = process;
+      process.stdout.transform(utf8.decoder).listen(debugPrint);
+      process.stderr.transform(utf8.decoder).listen(debugPrint);
+      var processExited = false;
+      process.exitCode.then((_) => processExited = true);
+
+      final deadline = DateTime.now().add(const Duration(seconds: 30));
+      while (DateTime.now().isBefore(deadline) && !processExited) {
+        if (await _isLocalBackendReady()) {
+          if (mounted) {
+            setState(() {
+              backendReady = true;
+              backendStarting = false;
+              status = '本機路線服務已啟動';
+            });
+          }
+          return;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+      }
+      throw Exception(
+        processExited
+            ? '本機後端啟動失敗；請確認 localhost:8000 沒有被其他服務佔用。'
+            : '本機後端啟動逾時，請檢查 App 安裝或電腦防火牆設定。',
+      );
+    } on Exception catch (error) {
+      if (mounted) {
+        setState(() {
+          backendReady = false;
+          backendStarting = false;
+          status = '無法啟動本機路線服務：$error';
+        });
+      }
+    }
   }
 
   void _clearPlan() {
@@ -122,6 +289,8 @@ class _NavigationPageState extends State<NavigationPage> {
 
   @override
   void dispose() {
+    _disposed = true;
+    _ownedBackend?.kill();
     startLat.dispose();
     startLon.dispose();
     endLat.dispose();
@@ -131,6 +300,7 @@ class _NavigationPageState extends State<NavigationPage> {
   }
 
   Future<void> plan() async {
+    if (!_backendCanPlan) return;
     setState(() {
       loading = true;
       status = '規劃中...';
@@ -169,6 +339,7 @@ class _NavigationPageState extends State<NavigationPage> {
   }
 
   Future<void> planTour() async {
+    if (!_backendCanPlan) return;
     if (selectedPurposes.isEmpty) {
       setState(() => status = '請至少選擇一種旅遊目的');
       return;
@@ -361,7 +532,9 @@ class _NavigationPageState extends State<NavigationPage> {
               SizedBox(
                 width: double.infinity,
                 child: FilledButton.icon(
-                  onPressed: loading || generatingPath ? null : planTour,
+                  onPressed: loading || generatingPath || !_backendCanPlan
+                      ? null
+                      : planTour,
                   icon: const Icon(Icons.auto_awesome),
                   label: Text(
                     loading
@@ -404,7 +577,7 @@ class _NavigationPageState extends State<NavigationPage> {
               SizedBox(
                 width: double.infinity,
                 child: FilledButton(
-                  onPressed: loading ? null : plan,
+                  onPressed: loading || !_backendCanPlan ? null : plan,
                   child: Text(loading ? '規劃中...' : '規劃起終點路線'),
                 ),
               ),
@@ -413,7 +586,7 @@ class _NavigationPageState extends State<NavigationPage> {
               padding: const EdgeInsets.symmetric(vertical: 6),
               child: Row(
                 children: [
-                  if (loading || generatingPath) ...[
+                  if (loading || generatingPath || backendStarting) ...[
                     const SizedBox(
                       width: 16,
                       height: 16,

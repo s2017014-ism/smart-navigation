@@ -163,19 +163,27 @@ flutter pub get
 flutter run
 ```
 
-Desktop builds default to `http://localhost:8000`; Android defaults to
-`http://10.0.2.2:8000` for the Android emulator. The app's **後端伺服器網址**
-field can be changed at runtime. For an Android phone on the same Wi-Fi, enter
-the computer's LAN address (for example, `http://192.168.1.10:8000`), start the
-backend with `--host 0.0.0.0`, and allow port 8000 through the computer firewall.
+Windows, macOS, and Linux desktop release builds include a local backend
+executable. On startup the app checks `http://127.0.0.1:8000`, starts that
+backend if needed, waits for it to become healthy, and stops the process when
+the app exits. Running the frontend from source also starts
+`python -m uvicorn backend.main:app` automatically; install backend requirements
+first. If another service already occupies port 8000, close it before opening
+the app.
+
+Android defaults to `http://10.0.2.2:8000` for the Android emulator and does not
+run a backend process on the device. For an Android phone on the same Wi-Fi,
+enter the computer's LAN address (for example, `http://192.168.1.10:8000`), start
+the backend with `--host 0.0.0.0`, and allow port 8000 through the computer
+firewall. The app's **後端伺服器網址** field can be changed at runtime.
 
 ## Release downloads
 
-Push a version tag such as `v1.4.0` to build Windows x64, Linux x64, Intel
+Push a version tag such as `v1.4.2` to build Windows x64, Linux x64, Intel
 macOS (x86_64), Android ARM, and Android x86_64 APK packages in GitHub Actions.
-The workflow publishes all five files as assets on a GitHub Release. The app
-requires the FastAPI backend to be running; the release contains the Flutter
-clients, not a hosted backend.
+The workflow publishes all five files as assets on a GitHub Release. Desktop
+packages include the automatically started local backend; Android still
+requires an accessible backend. No hosted backend is included.
 
 ## Key Features Implemented
 
