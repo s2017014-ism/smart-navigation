@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover - optional for offline fallback
 
 def build_fallback_graph() -> nx.MultiDiGraph:
     graph = nx.MultiDiGraph()
+    graph.graph["is_fallback"] = True
     points = {
         "north": (22.218, 113.550),
         "center": (22.192, 113.539),

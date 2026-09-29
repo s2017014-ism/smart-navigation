@@ -26,25 +26,10 @@ if not exist "%FLUTTER%" (
     exit /b 1
 )
 
-echo Checking the backend...
+echo Backend is not started automatically; start it separately before route planning.
+echo Backend URL: http://localhost:8000
 curl.exe --silent --fail http://localhost:8000/health >nul 2>&1
-if errorlevel 1 (
-    echo Starting backend in a separate window...
-    start "Macau Navigation Backend" /D "%PROJECT_DIR%" cmd.exe /k python -m uvicorn main:app --host 0.0.0.0 --port 8000
-    set /a ATTEMPTS=0
-    :wait_backend
-    timeout /t 1 /nobreak >nul
-    curl.exe --silent --fail http://localhost:8000/health >nul 2>&1
-    if not errorlevel 1 goto backend_ready
-    set /a ATTEMPTS+=1
-    if !ATTEMPTS! lss 30 goto wait_backend
-    echo Backend did not become ready. Check the backend window for errors.
-    pause
-    exit /b 1
-)
-
-:backend_ready
-echo Backend is ready.
+if not errorlevel 1 echo Backend is already available.
 
 if exist "%ADB%" (
     "%ADB%" start-server >nul

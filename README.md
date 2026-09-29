@@ -140,16 +140,17 @@ Response:
 
 ```bash
 pip install -r requirements.txt
-python -m uvicorn main:app --host 0.0.0.0 --port 8000
+python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
 The API will be available at `http://localhost:8000`. The supported entry
 points are `uvicorn main:app` from the repository root and
 `uvicorn backend.main:app` from the repository root.
 
-If `data/macau_network.graphml` is unavailable, the backend automatically uses
-a small offline fallback graph so that the API and frontend can still be
-developed and tested. Generate the real Macau graph with:
+If `data/macau_network.graphml` is unavailable, the backend uses a small
+offline fallback graph for development and testing. The fallback is not a real
+road network and is rejected for route planning. Generate the real Macau graph
+with:
 
 ```bash
 python map_downloader.py
@@ -163,13 +164,17 @@ flutter pub get
 flutter run
 ```
 
-Windows, macOS, and Linux desktop release builds include a local backend
-executable. On startup the app checks `http://127.0.0.1:8000`, starts that
-backend if needed, waits for it to become healthy, and stops the process when
-the app exits. Running the frontend from source also starts
-`python -m uvicorn backend.main:app` automatically; install backend requirements
-first. If another service already occupies port 8000, close it before opening
-the app.
+The app does not start or stop the backend. Start it separately before planning
+a route:
+
+```bash
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
+
+The app's **後端伺服器網址** field defaults to `http://localhost:8000` on
+desktop. If the backend reports that only the fallback graph is loaded, ensure
+`data/macau_network.graphml` exists, install the backend requirements, and
+restart the backend.
 
 Android defaults to `http://10.0.2.2:8000` for the Android emulator and does not
 run a backend process on the device. For an Android phone on the same Wi-Fi,
@@ -179,13 +184,11 @@ firewall. The app's **後端伺服器網址** field can be changed at runtime.
 
 ## Release downloads
 
-Push a version tag such as `v1.4.3` to build Windows x64, Linux x64, Intel
+Push a version tag such as `v1.4.4` to build Windows x64, Linux x64, Intel
 macOS (x86_64), Android ARM, and Android x86_64 APK packages in GitHub Actions.
-The tag-triggered workflow publishes all five files as assets on a GitHub
-Release. A separate **Windows-only release** workflow can publish a Windows
-update without changing the existing Linux, macOS, or Android release assets.
-Desktop packages include the automatically started local backend; Android
-still requires an accessible backend. No hosted backend is included.
+The tag-triggered workflow publishes all five app packages as assets on a
+GitHub Release. Release notes include a link to `http://localhost:8000` for
+opening the separately running backend. No backend is bundled or hosted.
 
 ## Key Features Implemented
 

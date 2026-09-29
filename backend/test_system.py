@@ -5,7 +5,8 @@ import networkx as nx
 from fastapi.testclient import TestClient
 
 from . import graph_builder
-from .main import app, transit_dataset
+from . import main as navigation_api
+from .main import RouteRequest, app, transit_dataset
 from .router import path_coordinates
 from .transit import (
     available_transit_graph,
@@ -45,6 +46,7 @@ def test_health() -> None:
     assert response.status_code == 200
     health = response.json()
     assert health["graph_loaded"] is True
+    assert health["road_network_loaded"] is True
     assert health["transit_loaded"] is True
     assert health["bus_route_count"] >= 100
     assert health["place_count"] >= 400
@@ -86,6 +88,10 @@ def test_tour_plan_respects_selected_purpose_count_and_time_budget() -> None:
             "purposes": ["food"],
         },
     )
+
+    if navigation_api.graph.graph.get("is_fallback"):
+        assert response.status_code == 503
+        return
 
     assert response.status_code == 200
     result = response.json()
@@ -154,11 +160,47 @@ def test_routes_ending_in_s_are_excluded() -> None:
 def test_route_and_intent() -> None:
     client = TestClient(app)
     route = client.post("/route/plan", json={"start_lat": 22.218, "start_lon": 113.550, "end_lat": 22.155, "end_lon": 113.570})
-    assert route.status_code == 200
-    assert route.json()["success"] is True
+    if navigation_api.graph.graph.get("is_fallback"):
+        assert route.status_code == 503
+        assert "測試路網" in route.json()["detail"]
+    else:
+        assert route.status_code == 200
+        assert route.json()["success"] is True
+        assert route.json()["geojson"]["properties"]["total_distance"] > 0
+        coordinates = route.json()["geojson"]["features"][0]["geometry"][
+            "coordinates"
+        ]
+        assert len(coordinates) > 2
+        assert coordinates[0] == [113.550, 22.218]
+        assert coordinates[-1] == [113.570, 22.155]
     intent = client.post("/ai/parse_intent", json={"text": "坐公車，最多步行2公里"})
     assert intent.json()["prefer_bus"] is True
     assert intent.json()["max_walk_km"] == 2.0
+
+
+def test_route_between_points_snapped_to_same_node_has_nonzero_distance(
+    monkeypatch,
+) -> None:
+    graph = nx.MultiDiGraph()
+    graph.add_node("road", x=113.539, y=22.192)
+    monkeypatch.setattr(navigation_api, "graph", graph)
+    monkeypatch.setattr(navigation_api, "nearest_node", lambda _lat, _lon: "road")
+
+    route = navigation_api.geojson_route(
+        RouteRequest(
+            start_lat=22.192,
+            start_lon=113.539,
+            end_lat=22.1921,
+            end_lon=113.5391,
+        )
+    )
+
+    assert route["properties"]["total_distance"] > 0
+    assert route["properties"]["total_time"] > 0
+    assert route["features"][0]["geometry"]["coordinates"] == [
+        [113.539, 22.192],
+        [113.5391, 22.1921],
+    ]
 
 
 def test_bus_route_uses_attached_route_data() -> None:
@@ -179,6 +221,10 @@ def test_bus_route_uses_attached_route_data() -> None:
             "prefer_bus": True,
         },
     )
+
+    if navigation_api.graph.graph.get("is_fallback"):
+        assert response.status_code == 503
+        return
 
     assert response.status_code == 200
     options = response.json()["options"]

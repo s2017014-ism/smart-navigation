@@ -34,6 +34,10 @@ TRANSIT_PATH = Path(os.getenv("TRANSIT_PATH", Path(__file__).resolve().parent / 
 PLACES_PATH = Path(os.getenv("PLACES_PATH", Path(__file__).resolve().parent / "data" / "macau_places.json"))
 app = FastAPI(title="Macau Adaptive Navigation API", version="2.0.0")
 graph: nx.MultiDiGraph = load_graph(GRAPH_PATH)
+ROAD_NETWORK_UNAVAILABLE = (
+    "目前只載入測試路網，無法規劃真實道路。"
+    "請確認 data/macau_network.graphml 存在並重新啟動後端。"
+)
 transit_dataset = load_transit_dataset(TRANSIT_PATH)
 transit_graph = build_transit_graph(transit_dataset)
 place_metadata, place_dataset = load_places(PLACES_PATH)
@@ -133,6 +137,11 @@ stop_graph_nodes = {
 
 
 def geojson_route(request: RouteRequest) -> dict[str, Any]:
+    if graph.graph.get("is_fallback"):
+        raise HTTPException(
+            status_code=503,
+            detail=ROAD_NETWORK_UNAVAILABLE,
+        )
     if request.prefer_bus:
         routes = plan_transit_routes(
             graph,
@@ -173,14 +182,38 @@ def geojson_route(request: RouteRequest) -> dict[str, Any]:
         "wheelchair": request.wheelchair,
     }
     result = shortest_route(graph, origin, destination, preferences)
-    if request.max_walk_km is not None and result.distance > request.max_walk_km * 1000 and not request.prefer_bus:
+    origin_data = graph.nodes[origin]
+    destination_data = graph.nodes[destination]
+    origin_coordinate = (float(origin_data["y"]), float(origin_data["x"]))
+    destination_coordinate = (
+        float(destination_data["y"]),
+        float(destination_data["x"]),
+    )
+    access_distance = haversine_m(
+        (request.start_lat, request.start_lon), origin_coordinate
+    )
+    egress_distance = haversine_m(
+        destination_coordinate, (request.end_lat, request.end_lon)
+    )
+    total_distance = result.distance + access_distance + egress_distance
+    if request.max_walk_km is not None and total_distance > request.max_walk_km * 1000 and not request.prefer_bus:
         raise HTTPException(status_code=422, detail="路線超過最大步行距離")
-    coordinates = path_coordinates(graph, result.nodes)
+    coordinates = [[request.start_lon, request.start_lat]]
+    for coordinate in path_coordinates(graph, result.nodes):
+        if coordinate != coordinates[-1]:
+            coordinates.append(coordinate)
+    destination_coordinate = [request.end_lon, request.end_lat]
+    if destination_coordinate != coordinates[-1]:
+        coordinates.append(destination_coordinate)
+    if total_distance <= 0 or len(coordinates) < 2:
+        raise HTTPException(status_code=422, detail="起點與終點相同，無法規劃路線")
+    total_time = total_distance / (25 / 3.6 if request.prefer_bus else 5 / 3.6)
     properties = {
-        "total_distance": result.distance,
-        "total_time": result.duration,
-        "walk_distance": result.distance if not request.prefer_bus else 0,
-        "bus_distance": result.distance if request.prefer_bus else 0,
+        "total_distance": total_distance,
+        "total_time": total_time,
+        "walk_distance": total_distance if not request.prefer_bus else 0,
+        "bus_distance": total_distance if request.prefer_bus else 0,
+        "access_distance": access_distance + egress_distance,
         "num_transfers": 0,
         "weather_alert": None,
         "weight": request.weight,
@@ -198,6 +231,7 @@ async def health() -> dict[str, Any]:
     return {
         "status": "healthy",
         "graph_loaded": graph is not None,
+        "road_network_loaded": not graph.graph.get("is_fallback", False),
         "node_count": graph.number_of_nodes(),
         "transit_loaded": bool(transit_graph.number_of_edges()),
         "bus_stop_count": len(transit_dataset.stops),
@@ -226,6 +260,8 @@ async def list_places(
 async def plan_tour_route(request: TourRequest) -> dict[str, Any]:
     if len(set(request.purposes)) != len(request.purposes):
         raise HTTPException(status_code=422, detail="旅遊目的不可重複")
+    if graph.graph.get("is_fallback"):
+        raise HTTPException(status_code=503, detail=ROAD_NETWORK_UNAVAILABLE)
     try:
         itinerary = plan_tour(
             graph,

@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:macau_navigation/main.dart';
 
 void main() {
-  testWidgets('planner and map are split into stacked sections',
+  testWidgets('planner and map use stacked sections with a collapsible planner',
       (tester) async {
     await tester.pumpWidget(const MacauNavigationApp());
 
@@ -14,8 +14,19 @@ void main() {
     expect(find.text('美食'), findsOneWidget);
     expect(find.text('建築'), findsOneWidget);
     expect(find.text('歷史'), findsOneWidget);
-    expect(find.textContaining('上方｜行程規劃'), findsOneWidget);
-    expect(find.textContaining('下方｜地圖與路線'), findsOneWidget);
+    expect(find.text('行程規劃'), findsOneWidget);
+    expect(find.textContaining('地圖與路線'), findsOneWidget);
+    expect(find.textContaining('上方'), findsNothing);
+    expect(find.textContaining('下方'), findsNothing);
+
+    await tester.tap(find.byTooltip('隱藏行程設定'));
+    await tester.pumpAndSettle();
+    expect(find.text('行程規劃'), findsNothing);
+    expect(find.textContaining('地圖與路線'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('顯示行程設定'));
+    await tester.pumpAndSettle();
+    expect(find.text('行程規劃'), findsOneWidget);
 
     await tester.tap(find.text('起終點導航'));
     await tester.pumpAndSettle();
