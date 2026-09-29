@@ -1,7 +1,9 @@
 @echo off
-REM Startup script for Macau Navigation Backend (Windows)
-REM Run from project root: start_backend.bat
-
-cd /d "%~dp0"
-if exist venv\Scripts\activate.bat call venv\Scripts\activate.bat
-python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+setlocal
+if not exist "%~dp0backend\main.py" (
+    echo Backend files are missing. Download and extract the complete
+    echo smart-navigation-backend-launcher-windows.zip from the release.
+    pause
+    exit /b 1
+)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -File "%~dp0start_backend.ps1"

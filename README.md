@@ -171,6 +171,14 @@ a route:
 python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
+On Windows, download and extract the complete
+`smart-navigation-backend-launcher-windows.zip` from the release, then
+double-click `start_backend.bat`. The package includes the backend source and
+road graph and creates a private Python environment on first launch. Keep the
+PowerShell window open while using the app; press Ctrl+C there to stop the
+backend. Do not run the BAT file by itself because it needs the adjacent
+backend and graph files.
+
 The app's **後端伺服器網址** field defaults to `http://localhost:8000` on
 desktop. If the backend reports that only the fallback graph is loaded, ensure
 `data/macau_network.graphml` exists, install the backend requirements, and
