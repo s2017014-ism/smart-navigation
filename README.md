@@ -13,6 +13,9 @@ A Python (FastAPI) + Flutter adaptive travel navigation system for Macau with:
 │   ├── main.py              # FastAPI application with REST endpoints
 │   ├── graph_builder.py     # OSMnx graph loading and offline fallback graph
 │   ├── router.py            # Adaptive shortest-path routing
+│   ├── transit.py           # Walking-to-bus and bus-transfer routing
+│   ├── data/
+│   │   └── macau_bus_routes.json # Bus stop sequences and matched coordinates
 │   ├── test_system.py       # Backend smoke tests
 │   └── requirements.txt     # Backend dependencies
 ├── frontend/
@@ -30,6 +33,25 @@ A Python (FastAPI) + Flutter adaptive travel navigation system for Macau with:
 | `/route/update` | POST | Dynamic re-routing for GPS deviation/weather |
 | `/geocode/search` | GET | Nominatim place search proxy |
 | `/geocode/reverse` | GET | Nominatim reverse geocoding proxy |
+
+Set `prefer_bus` to `true` on `/route/plan` to plan a walking + bus trip using the
+bundled Macau route stop sequences. The response includes every feasible direct
+bus route and the fastest transfer itinerary in an `options` array; `geojson`
+remains the fastest option for clients that only use one itinerary. Each option
+contains separate GeoJSON features (`properties.mode` is `bus` or `walk`), and
+bus legs include the route number. The Flutter map draws bus legs in orange and
+walking legs in blue, and lets users select an alternative. Routes whose names
+end in `S` are excluded. N-prefix night bus routes are only considered from
+00:00 through 05:59 Macau time; this restriction is not shown in the bus UI.
+The map also shows each walking instruction and bus boarding/alighting stop, and
+the app-bar control can collapse the route settings to make more room for the map.
+
+The bundled transit data was prepared from the supplied DSAT route/stop files.
+Stop coordinates are matched from OpenStreetMap bus-stop/platform features.
+Thirteen stop codes currently have no coordinate match and are skipped as
+intermediate boarding points. Transit times are estimates and do not use live
+arrival schedules or vehicle positions. Map data attribution: © OpenStreetMap
+contributors.
 
 ### Route Plan Request
 ```json
@@ -93,7 +115,18 @@ flutter pub get
 flutter run
 ```
 
-Note: The frontend connects to `http://10.0.2.2:8000` (Android emulator localhost). Change `_apiBaseUrl` in `main.dart` for other platforms.
+Desktop builds default to `http://localhost:8000`; Android defaults to
+`http://10.0.2.2:8000` for the Android emulator. The app's **後端伺服器網址**
+field can be changed at runtime. For an Android phone on the same Wi-Fi, enter
+the computer's LAN address (for example, `http://192.168.1.10:8000`), start the
+backend with `--host 0.0.0.0`, and allow port 8000 through the computer firewall.
+
+## Release downloads
+
+Push a version tag such as `v1.0.0` to build Windows x64, Linux x64, and Android
+APK packages in GitHub Actions. The workflow publishes all three files as assets
+on a GitHub Release. The app requires the FastAPI backend to be running; the
+release contains the Flutter clients, not a hosted backend.
 
 ## Key Features Implemented
 

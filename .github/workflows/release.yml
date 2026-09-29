@@ -1,0 +1,96 @@
+name: Build and release apps
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+          cache-key: flutter-windows
+      - name: Build Windows app
+        working-directory: frontend
+        run: flutter build windows --release
+      - name: Package Windows app
+        shell: pwsh
+        run: |
+          Compress-Archive -Path frontend/build/windows/x64/runner/Release/* `
+            -DestinationPath macau-smart-navigation-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: macau-smart-navigation-windows-x64.zip
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+          cache-key: flutter-linux
+      - name: Build Linux app
+        working-directory: frontend
+        run: flutter build linux --release
+      - name: Package Linux app
+        run: |
+          tar -czf macau-smart-navigation-linux-x64.tar.gz \
+            -C frontend/build/linux/x64/release/bundle .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: macau-smart-navigation-linux-x64.tar.gz
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+          cache-key: flutter-android
+      - name: Build Android APK
+        working-directory: frontend
+        run: flutter build apk --release
+      - name: Rename Android APK
+        run: |
+          cp frontend/build/app/outputs/flutter-apk/app-release.apk \
+            macau-smart-navigation-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-release
+          path: macau-smart-navigation-android.apk
+
+  release:
+    needs: [windows, linux, android]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-release"
+          merge-multiple: true
+          path: release-assets
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-assets/* \
+            --title "$GITHUB_REF_NAME" --generate-notes

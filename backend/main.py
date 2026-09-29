@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import math
+from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -10,12 +13,32 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .graph_builder import load_graph
-from .router import haversine_m, shortest_route
+from .router import haversine_m, path_coordinates, shortest_route
+from .transit import (
+    MACAU_TIMEZONE,
+    available_transit_graph,
+    build_transit_graph,
+    load_transit_dataset,
+    plan_transit_routes,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 GRAPH_PATH = Path(os.getenv("GRAPH_PATH", ROOT / "data" / "macau_network.graphml"))
+TRANSIT_PATH = Path(os.getenv("TRANSIT_PATH", Path(__file__).resolve().parent / "data" / "macau_bus_routes.json"))
 app = FastAPI(title="Macau Adaptive Navigation API", version="2.0.0")
 graph: nx.MultiDiGraph = load_graph(GRAPH_PATH)
+transit_dataset = load_transit_dataset(TRANSIT_PATH)
+transit_graph = build_transit_graph(transit_dataset)
+graph_node_ids = list(graph.nodes)
+NODE_GRID_DEGREES = 0.002
+graph_node_grid: dict[tuple[int, int], list[Any]] = defaultdict(list)
+for node in graph_node_ids:
+    data = graph.nodes[node]
+    cell = (
+        math.floor(float(data["y"]) / NODE_GRID_DEGREES),
+        math.floor(float(data["x"]) / NODE_GRID_DEGREES),
+    )
+    graph_node_grid[cell].append(node)
 
 
 class RouteRequest(BaseModel):
@@ -43,10 +66,85 @@ class UpdateRequest(RouteRequest):
 
 
 def nearest_node(lat: float, lon: float) -> Any:
-    return min(graph.nodes, key=lambda node: haversine_m((lat, lon), (float(graph.nodes[node]["y"]), float(graph.nodes[node]["x"]))))
+    cell_y = math.floor(lat / NODE_GRID_DEGREES)
+    cell_x = math.floor(lon / NODE_GRID_DEGREES)
+    candidates: list[Any] = []
+    for radius in range(100):
+        if radius == 0:
+            cells = [(cell_y, cell_x)]
+        else:
+            cells = [
+                (cell_y + dy, cell_x + dx)
+                for dy in range(-radius, radius + 1)
+                for dx in range(-radius, radius + 1)
+                if abs(dx) == radius or abs(dy) == radius
+            ]
+        for cell in cells:
+            candidates.extend(graph_node_grid.get(cell, ()))
+        if not candidates:
+            continue
+
+        nearest = min(
+            candidates,
+            key=lambda node: haversine_m(
+                (lat, lon),
+                (float(graph.nodes[node]["y"]), float(graph.nodes[node]["x"])),
+            ),
+        )
+        distance = haversine_m(
+            (lat, lon),
+            (float(graph.nodes[nearest]["y"]), float(graph.nodes[nearest]["x"])),
+        )
+        y_gap = min(
+            lat - (cell_y - radius) * NODE_GRID_DEGREES,
+            (cell_y + radius + 1) * NODE_GRID_DEGREES - lat,
+        ) * 111_195
+        x_gap = min(
+            lon - (cell_x - radius) * NODE_GRID_DEGREES,
+            (cell_x + radius + 1) * NODE_GRID_DEGREES - lon,
+        ) * 111_195 * math.cos(math.radians(lat))
+        if distance <= min(y_gap, x_gap):
+            return nearest
+    raise RuntimeError("Could not find a road node near the requested coordinate")
+
+
+stop_graph_nodes = {
+    code: nearest_node(float(stop["lat"]), float(stop["lon"]))
+    for code, stop in transit_dataset.stops.items()
+}
 
 
 def geojson_route(request: RouteRequest) -> dict[str, Any]:
+    if request.prefer_bus:
+        routes = plan_transit_routes(
+            graph,
+            available_transit_graph(transit_graph, datetime.now(MACAU_TIMEZONE)),
+            transit_dataset,
+            stop_graph_nodes,
+            (request.start_lat, request.start_lon),
+            (request.end_lat, request.end_lon),
+            nearest_node,
+            request.preferences | {
+                "avoid_stairs": request.avoid_stairs,
+                "max_slope": request.max_slope,
+                "max_walk_km": request.max_walk_km,
+                "wheelchair": request.wheelchair,
+            },
+        )
+        if not routes:
+            detail = (
+                "找不到符合步行距離限制的巴士路線"
+                if request.max_walk_km is not None
+                else "找不到可用巴士路線"
+            )
+            raise HTTPException(
+                status_code=422 if request.max_walk_km is not None else 404,
+                detail=detail,
+            )
+        primary = routes[0].copy()
+        primary["options"] = routes
+        return primary
+
     origin = nearest_node(request.start_lat, request.start_lon)
     destination = nearest_node(request.end_lat, request.end_lon)
     preferences = request.preferences | {
@@ -59,7 +157,7 @@ def geojson_route(request: RouteRequest) -> dict[str, Any]:
     result = shortest_route(graph, origin, destination, preferences)
     if request.max_walk_km is not None and result.distance > request.max_walk_km * 1000 and not request.prefer_bus:
         raise HTTPException(status_code=422, detail="路線超過最大步行距離")
-    coordinates = [[float(graph.nodes[node]["x"]), float(graph.nodes[node]["y"])] for node in result.nodes]
+    coordinates = path_coordinates(graph, result.nodes)
     properties = {
         "total_distance": result.distance,
         "total_time": result.duration,
@@ -79,7 +177,14 @@ def geojson_route(request: RouteRequest) -> dict[str, Any]:
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    return {"status": "healthy", "graph_loaded": graph is not None, "node_count": graph.number_of_nodes()}
+    return {
+        "status": "healthy",
+        "graph_loaded": graph is not None,
+        "node_count": graph.number_of_nodes(),
+        "transit_loaded": bool(transit_graph.number_of_edges()),
+        "bus_stop_count": len(transit_dataset.stops),
+        "bus_route_count": len(transit_dataset.routes),
+    }
 
 
 @app.post("/route/plan")
@@ -88,14 +193,26 @@ async def plan_route(request: RouteRequest) -> dict[str, Any]:
         geojson = geojson_route(request)
     except nx.NetworkXNoPath as exc:
         raise HTTPException(status_code=404, detail="找不到可行路徑") from exc
-    return {"success": True, "geojson": geojson}
+    options = geojson.pop("options", None)
+    response = {"success": True, "geojson": geojson}
+    if options is not None:
+        response["options"] = options
+    return response
 
 
 @app.post("/route/update")
 async def update_route(request: UpdateRequest) -> dict[str, Any]:
     result = geojson_route(request)
+    options = result.pop("options", None)
     result["properties"]["weather_alert"] = request.weather_alert
-    return {"success": True, "rerouted": request.current_lat is not None, "geojson": result}
+    response = {
+        "success": True,
+        "rerouted": request.current_lat is not None,
+        "geojson": result,
+    }
+    if options is not None:
+        response["options"] = options
+    return response
 
 
 @app.post("/ai/parse_intent")
