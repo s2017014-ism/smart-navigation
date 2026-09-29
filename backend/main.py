@@ -5,7 +5,7 @@ import math
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import networkx as nx
@@ -13,6 +13,12 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from .graph_builder import load_graph
+from .places import (
+    CATEGORY_LABELS,
+    load_places,
+    plan_tour,
+    public_place,
+)
 from .router import haversine_m, path_coordinates, shortest_route
 from .transit import (
     MACAU_TIMEZONE,
@@ -25,10 +31,12 @@ from .transit import (
 ROOT = Path(__file__).resolve().parents[1]
 GRAPH_PATH = Path(os.getenv("GRAPH_PATH", ROOT / "data" / "macau_network.graphml"))
 TRANSIT_PATH = Path(os.getenv("TRANSIT_PATH", Path(__file__).resolve().parent / "data" / "macau_bus_routes.json"))
+PLACES_PATH = Path(os.getenv("PLACES_PATH", Path(__file__).resolve().parent / "data" / "macau_places.json"))
 app = FastAPI(title="Macau Adaptive Navigation API", version="2.0.0")
 graph: nx.MultiDiGraph = load_graph(GRAPH_PATH)
 transit_dataset = load_transit_dataset(TRANSIT_PATH)
 transit_graph = build_transit_graph(transit_dataset)
+place_metadata, place_dataset = load_places(PLACES_PATH)
 graph_node_ids = list(graph.nodes)
 NODE_GRID_DEGREES = 0.002
 graph_node_grid: dict[tuple[int, int], list[Any]] = defaultdict(list)
@@ -57,6 +65,16 @@ class RouteRequest(BaseModel):
 
 class IntentRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=1000)
+
+
+class TourRequest(BaseModel):
+    start_lat: float = Field(..., ge=-90, le=90)
+    start_lon: float = Field(..., ge=-180, le=180)
+    duration_minutes: int = Field(..., ge=30, le=720)
+    place_count: int = Field(..., ge=1, le=10)
+    purposes: list[Literal["culture", "food", "architecture", "history"]] = Field(
+        ..., min_length=1, max_length=4
+    )
 
 
 class UpdateRequest(RouteRequest):
@@ -184,6 +202,58 @@ async def health() -> dict[str, Any]:
         "transit_loaded": bool(transit_graph.number_of_edges()),
         "bus_stop_count": len(transit_dataset.stops),
         "bus_route_count": len(transit_dataset.routes),
+        "place_count": len(place_dataset),
+    }
+
+
+@app.get("/places")
+async def list_places(
+    purpose: Literal["culture", "food", "architecture", "history"] | None = None,
+    limit: int = Query(100, ge=1, le=500),
+) -> dict[str, Any]:
+    places = place_dataset
+    if purpose is not None:
+        places = [place for place in places if place["scores"][purpose] > 0]
+    return {
+        "metadata": place_metadata,
+        "score_labels": CATEGORY_LABELS,
+        "total": len(places),
+        "places": [public_place(place) for place in places[:limit]],
+    }
+
+
+@app.post("/tour/plan")
+async def plan_tour_route(request: TourRequest) -> dict[str, Any]:
+    if len(set(request.purposes)) != len(request.purposes):
+        raise HTTPException(status_code=422, detail="旅遊目的不可重複")
+    try:
+        itinerary = plan_tour(
+            graph,
+            place_dataset,
+            (request.start_lat, request.start_lon),
+            nearest_node,
+            request.duration_minutes,
+            request.place_count,
+            request.purposes,
+        )
+    except (nx.NetworkXNoPath, RuntimeError) as exc:
+        raise HTTPException(status_code=404, detail="起點附近找不到可步行的道路") from exc
+    if not itinerary["places"]:
+        raise HTTPException(
+            status_code=422,
+            detail="所選目的附近沒有可用地點，或旅遊時間不足以到達第一個地點",
+        )
+    return {
+        "success": True,
+        "metadata": place_metadata,
+        "score_labels": CATEGORY_LABELS,
+        "summary": itinerary["summary"],
+        "places": itinerary["places"],
+        "geojson": {
+            "type": "FeatureCollection",
+            "properties": itinerary["summary"],
+            "features": itinerary["features"],
+        },
     }
 
 

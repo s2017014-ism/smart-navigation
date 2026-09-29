@@ -11,7 +11,7 @@ class MacauNavigationApp extends StatelessWidget {
   const MacauNavigationApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: 'Macau Navigation',
+        title: 'Smart Navigation',
         theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
         home: const NavigationPage(),
       );
@@ -33,18 +33,43 @@ class _NavigationPageState extends State<NavigationPage> {
         ? 'http://10.0.2.2:8000'
         : 'http://localhost:8000',
   );
-  final chat = TextEditingController();
   final routeLines = <Polyline>[];
   final routeInstructions = <Map<String, dynamic>>[];
   final routeOptions = <Map<String, dynamic>>[];
+  final recommendedPlaces = <Map<String, dynamic>>[];
+  final selectedPurposes = <String>{'culture'};
   int selectedOptionIndex = 0;
+  int durationMinutes = 120;
+  int requestedPlaceCount = 4;
   LatLng startPosition = const LatLng(22.192, 113.539);
   LatLng endPosition = const LatLng(22.188, 113.535);
-  String status = '輸入起點與終點後規劃路線';
+  String status = '選擇旅遊目的、時間和地點數後推薦行程';
   bool loading = false;
   bool preferBus = false;
   bool selectingStart = true;
-  bool showControls = true;
+  bool tourMode = true;
+
+  static const purposes = <String, String>{
+    'culture': '文化',
+    'food': '美食',
+    'architecture': '建築',
+    'history': '歷史',
+  };
+
+  Uri _serverUri(String path) {
+    final baseUri = Uri.parse(apiBaseUrl.text.trim());
+    if (!baseUri.hasScheme || !baseUri.hasAuthority) {
+      throw const FormatException('請輸入有效的後端網址，例如 http://192.168.1.10:8000');
+    }
+    return baseUri.resolve(path);
+  }
+
+  void _clearPlan() {
+    routeLines.clear();
+    routeInstructions.clear();
+    routeOptions.clear();
+    recommendedPlaces.clear();
+  }
 
   void _selectMapTarget(bool isStart) {
     setState(() {
@@ -55,7 +80,7 @@ class _NavigationPageState extends State<NavigationPage> {
 
   void _selectMapPoint(LatLng position) {
     setState(() {
-      if (selectingStart) {
+      if (tourMode || selectingStart) {
         startPosition = position;
         startLat.text = position.latitude.toStringAsFixed(6);
         startLon.text = position.longitude.toStringAsFixed(6);
@@ -64,10 +89,9 @@ class _NavigationPageState extends State<NavigationPage> {
         endLat.text = position.latitude.toStringAsFixed(6);
         endLon.text = position.longitude.toStringAsFixed(6);
       }
-      routeLines.clear();
-      routeInstructions.clear();
-      routeOptions.clear();
-      status = '已設定${selectingStart ? '起點' : '終點'}：'
+      _clearPlan();
+      final isStart = tourMode || selectingStart;
+      status = '已設定${isStart ? '起點' : '終點'}：'
           '${position.latitude.toStringAsFixed(6)}, '
           '${position.longitude.toStringAsFixed(6)}';
     });
@@ -88,9 +112,7 @@ class _NavigationPageState extends State<NavigationPage> {
       } else {
         endPosition = LatLng(lat, lon);
       }
-      routeLines.clear();
-      routeInstructions.clear();
-      routeOptions.clear();
+      _clearPlan();
     });
   }
 
@@ -101,7 +123,6 @@ class _NavigationPageState extends State<NavigationPage> {
     endLat.dispose();
     endLon.dispose();
     apiBaseUrl.dispose();
-    chat.dispose();
     super.dispose();
   }
 
@@ -109,17 +130,11 @@ class _NavigationPageState extends State<NavigationPage> {
     setState(() {
       loading = true;
       status = '規劃中...';
-      routeLines.clear();
-      routeInstructions.clear();
-      routeOptions.clear();
+      _clearPlan();
     });
     try {
-      final baseUri = Uri.parse(apiBaseUrl.text.trim());
-      if (!baseUri.hasScheme || !baseUri.hasAuthority) {
-        throw const FormatException('請輸入有效的後端網址，例如 http://192.168.1.10:8000');
-      }
       final response = await http.post(
-        baseUri.resolve('/route/plan'),
+        _serverUri('/route/plan'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'start_lat': double.parse(startLat.text),
@@ -149,24 +164,75 @@ class _NavigationPageState extends State<NavigationPage> {
     }
   }
 
-  void _showRouteOption(Map<String, dynamic> geojson) {
-    final properties = geojson['properties'] as Map<String, dynamic>;
-    final features = geojson['features'] as List;
-    routeLines
-      ..clear()
-      ..addAll(features.map((feature) {
+  Future<void> planTour() async {
+    if (selectedPurposes.isEmpty) {
+      setState(() => status = '請至少選擇一種旅遊目的');
+      return;
+    }
+    setState(() {
+      loading = true;
+      status = '正在依旅遊時間和偏好安排景點...';
+      _clearPlan();
+    });
+    try {
+      final response = await http.post(
+        _serverUri('/tour/plan'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'start_lat': double.parse(startLat.text),
+          'start_lon': double.parse(startLon.text),
+          'duration_minutes': durationMinutes,
+          'place_count': requestedPlaceCount,
+          'purposes': selectedPurposes.toList(),
+        }),
+      );
+      final data = jsonDecode(response.body) as Map<String, dynamic>;
+      if (response.statusCode != 200) {
+        throw Exception(data['detail'] ?? '行程規劃失敗');
+      }
+      final summary = data['summary'] as Map<String, dynamic>;
+      final places = (data['places'] as List)
+          .map((place) => Map<String, dynamic>.from(place as Map))
+          .toList();
+      final geojson = data['geojson'] as Map<String, dynamic>;
+      final features = geojson['features'] as List;
+      setState(() {
+        recommendedPlaces.addAll(places);
+        routeLines.addAll(_polylines(features));
+        routeInstructions.addAll(features.map((feature) =>
+            Map<String, dynamic>.from(
+                (feature as Map<String, dynamic>)['properties'] as Map)));
+        status = '時間內安排 ${places.length}/$requestedPlaceCount 個地點 · 步行約 '
+            '${(summary['travel_minutes'] as num).toInt()} 分鐘 · '
+            '參觀約 ${(summary['visit_minutes'] as num).toInt()} 分鐘';
+      });
+    } catch (error) {
+      setState(() => status = '錯誤：$error');
+    } finally {
+      setState(() => loading = false);
+    }
+  }
+
+  List<Polyline> _polylines(List features) => features.map((feature) {
         final featureMap = feature as Map<String, dynamic>;
         final coordinates = featureMap['geometry']['coordinates'] as List;
         final mode = featureMap['properties']['mode'];
         return Polyline(
           points: coordinates
-              .map((point) => LatLng((point[1] as num).toDouble(),
-                  (point[0] as num).toDouble()))
+              .map((point) => LatLng(
+                  (point[1] as num).toDouble(), (point[0] as num).toDouble()))
               .toList(),
           color: mode == 'bus' ? Colors.deepOrange : Colors.blue,
           strokeWidth: 5,
         );
-      }));
+      }).toList();
+
+  void _showRouteOption(Map<String, dynamic> geojson) {
+    final properties = geojson['properties'] as Map<String, dynamic>;
+    final features = geojson['features'] as List;
+    routeLines
+      ..clear()
+      ..addAll(_polylines(features));
     routeInstructions
       ..clear()
       ..addAll(features.map((feature) => Map<String, dynamic>.from(
@@ -182,201 +248,352 @@ class _NavigationPageState extends State<NavigationPage> {
 
   @override
   Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(
-          title: const Text('澳門智慧導航'),
-          actions: [
-            IconButton(
-              tooltip: showControls ? '隱藏設定' : '顯示設定',
-              onPressed: () => setState(() => showControls = !showControls),
-              icon: Icon(showControls ? Icons.expand_less : Icons.tune),
-            ),
-          ],
-        ),
+        appBar: AppBar(title: const Text('智慧旅遊規劃')),
         body: Column(children: [
-          AnimatedSize(
-              duration: const Duration(milliseconds: 200),
-              child: showControls
-                  ? Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Column(children: [
-                        TextField(
-                          controller: apiBaseUrl,
-                          keyboardType: TextInputType.url,
-                          decoration: const InputDecoration(
-                            labelText: '後端伺服器網址',
-                            hintText: '例如 http://192.168.1.10:8000',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                        Row(children: [
-                          Expanded(
-                              child: _field(
-                                  '起點緯度',
-                                  startLat,
-                                  () => _updatePosition(
-                                      latitude: startLat,
-                                      longitude: startLon,
-                                      isStart: true))),
-                          Expanded(
-                              child: _field(
-                                  '起點經度',
-                                  startLon,
-                                  () => _updatePosition(
-                                      latitude: startLat,
-                                      longitude: startLon,
-                                      isStart: true))),
-                          IconButton.filledTonal(
-                            tooltip: '在地圖選擇起點',
-                            isSelected: selectingStart,
-                            onPressed: () => _selectMapTarget(true),
-                            icon: const Icon(Icons.add_location_alt),
-                          ),
-                        ]),
-                        Row(children: [
-                          Expanded(
-                              child: _field(
-                                  '終點緯度',
-                                  endLat,
-                                  () => _updatePosition(
-                                      latitude: endLat,
-                                      longitude: endLon,
-                                      isStart: false))),
-                          Expanded(
-                              child: _field(
-                                  '終點經度',
-                                  endLon,
-                                  () => _updatePosition(
-                                      latitude: endLat,
-                                      longitude: endLon,
-                                      isStart: false))),
-                          IconButton.filledTonal(
-                            tooltip: '在地圖選擇終點',
-                            isSelected: !selectingStart,
-                            onPressed: () => _selectMapTarget(false),
-                            icon: const Icon(Icons.add_location_alt),
-                          ),
-                        ]),
-                        SwitchListTile(
-                            title: const Text('優先使用公車'),
-                            value: preferBus,
-                            onChanged: (value) =>
-                                setState(() => preferBus = value)),
-                        SizedBox(
-                            width: double.infinity,
-                            child: FilledButton(
-                                onPressed: loading ? null : plan,
-                                child: Text(loading ? '規劃中...' : '規劃路線'))),
-                        Text(status),
-                      ]))
-                  : const SizedBox.shrink()),
           Expanded(
-            child: Stack(
-              children: [
-                FlutterMap(
-                  options: MapOptions(
-                    initialCenter: const LatLng(22.192, 113.539),
-                    initialZoom: 13,
-                    onTap: (_, position) => _selectMapPoint(position),
-                  ),
-                  children: [
-                    TileLayer(
-                        urlTemplate:
-                            'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                        userAgentPackageName: 'com.example.macau_navigation'),
-                    if (routeLines.isNotEmpty)
-                      PolylineLayer(polylines: routeLines),
-                    MarkerLayer(markers: [
-                      _pin(startPosition, '起點', Colors.green),
-                      _pin(endPosition, '終點', Colors.red),
-                    ]),
-                  ],
-                ),
-                Positioned(
-                  top: 12,
-                  left: 12,
-                  right: 12,
-                  child: Card(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 12, vertical: 8),
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text('點擊地圖設定${selectingStart ? '起點' : '終點'}'),
-                          if (routeOptions.length > 1)
-                            SingleChildScrollView(
-                              scrollDirection: Axis.horizontal,
-                              child: Row(
-                                children: List.generate(routeOptions.length,
-                                    (index) {
-                                  final properties = routeOptions[index]
-                                      ['properties'] as Map<String, dynamic>;
-                                  final label = properties['option_label']
-                                      as String? ?? '方案 ${index + 1}';
-                                  final minutes =
-                                      ((properties['total_time'] as num)
-                                                  .toDouble() /
-                                              60)
-                                          .ceil();
-                                  return Padding(
-                                    padding: const EdgeInsets.only(right: 6),
-                                    child: ChoiceChip(
-                                      label: Text('$label · 約 $minutes 分'),
-                                      selected: selectedOptionIndex == index,
-                                      onSelected: (_) => setState(() {
-                                        selectedOptionIndex = index;
-                                        _showRouteOption(routeOptions[index]);
-                                      }),
-                                    ),
-                                  );
-                                }),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                if (routeInstructions.isNotEmpty)
-                  Positioned(
-                    bottom: 8,
-                    left: 8,
-                    right: 8,
-                    child: ConstrainedBox(
-                      constraints: const BoxConstraints(maxHeight: 180),
-                      child: Card(
-                        child: ListView.separated(
-                          shrinkWrap: true,
-                          padding: const EdgeInsets.symmetric(vertical: 4),
-                          itemCount: routeInstructions.length,
-                          separatorBuilder: (_, __) => const Divider(height: 1),
-                          itemBuilder: (context, index) =>
-                              _instructionTile(routeInstructions[index]),
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
+            flex: 6,
+            child: _plannerPage(),
           ),
-          Padding(
-              padding: const EdgeInsets.all(8),
-              child: Row(children: [
-                Expanded(
-                    child: TextField(
-                        controller: chat,
-                        decoration: const InputDecoration(
-                            hintText: '例如：我想坐公車，最多步行2公里'))),
-                IconButton(
-                    icon: const Icon(Icons.send),
-                    onPressed: () {
-                      if (chat.text.isNotEmpty) {
-                        setState(() => status = '偏好已收到：${chat.text}');
-                      }
-                    }),
-              ])),
+          const Divider(height: 1),
+          Expanded(
+            flex: 7,
+            child: _mapPage(),
+          ),
         ]),
       );
+
+  Widget _plannerPage() => SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('上方｜行程規劃',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            TextField(
+              controller: apiBaseUrl,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(
+                labelText: '後端伺服器網址',
+                hintText: '例如 http://192.168.1.10:8000',
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 8),
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: true, label: Text('推薦景點行程')),
+                ButtonSegment(value: false, label: Text('起終點導航')),
+              ],
+              selected: {tourMode},
+              onSelectionChanged: (selection) => setState(() {
+                tourMode = selection.first;
+                _clearPlan();
+                status = '請設定起點和行程偏好';
+              }),
+            ),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(
+                  child: _field(
+                      '起點緯度',
+                      startLat,
+                      () => _updatePosition(
+                          latitude: startLat,
+                          longitude: startLon,
+                          isStart: true))),
+              Expanded(
+                  child: _field(
+                      '起點經度',
+                      startLon,
+                      () => _updatePosition(
+                          latitude: startLat,
+                          longitude: startLon,
+                          isStart: true))),
+              IconButton.filledTonal(
+                tooltip: '在地圖選擇起點',
+                onPressed: () => _selectMapTarget(true),
+                icon: const Icon(Icons.add_location_alt),
+              ),
+            ]),
+            if (tourMode) ...[
+              _tourPreferences(),
+              const ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                title: Text('分數說明與資料來源'),
+                children: [
+                  Padding(
+                    padding: EdgeInsets.only(bottom: 8),
+                    child: Text(
+                      '分數代表公開地圖標籤與目的的符合程度，不是網路評分或品質排名。'
+                      '文化景點資料來自 HOTOSM／OpenStreetMap（2026-08-07 快照）；'
+                      '美食地點來自 OpenStreetMap Nominatim（2026-09-29 查詢）。'
+                      '每個地點會依文化、餐飲、'
+                      '歷史及建築標籤分別計分；沒有相關標籤就顯示 0。'
+                      '行程時間包含景點間步行和預估停留，不包含從最後景點返回起點。'
+                      '開放時間、參觀時間和步行時間可能不完整或已過時。',
+                    ),
+                  ),
+                ],
+              ),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: loading ? null : planTour,
+                  icon: const Icon(Icons.auto_awesome),
+                  label: Text(loading ? '安排中...' : '推薦我的行程'),
+                ),
+              ),
+            ] else ...[
+              Row(children: [
+                Expanded(
+                    child: _field(
+                        '終點緯度',
+                        endLat,
+                        () => _updatePosition(
+                            latitude: endLat,
+                            longitude: endLon,
+                            isStart: false))),
+                Expanded(
+                    child: _field(
+                        '終點經度',
+                        endLon,
+                        () => _updatePosition(
+                            latitude: endLat,
+                            longitude: endLon,
+                            isStart: false))),
+                IconButton.filledTonal(
+                  tooltip: '在地圖選擇終點',
+                  onPressed: () => _selectMapTarget(false),
+                  icon: const Icon(Icons.add_location_alt),
+                ),
+              ]),
+              SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('優先使用公車'),
+                  value: preferBus,
+                  onChanged: (value) => setState(() => preferBus = value)),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: loading ? null : plan,
+                  child: Text(loading ? '規劃中...' : '規劃起終點路線'),
+                ),
+              ),
+            ],
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Text(status),
+            ),
+            if (recommendedPlaces.isNotEmpty) ...[
+              const Text('推薦地點｜各項分數為公開地圖標籤符合度，並非評價',
+                  style: TextStyle(fontWeight: FontWeight.w600)),
+              ...recommendedPlaces.map(_placeTile),
+            ],
+          ],
+        ),
+      );
+
+  Widget _tourPreferences() => Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            const Text('可用總時間'),
+            Expanded(
+              child: Slider(
+                min: 30,
+                max: 720,
+                divisions: 23,
+                value: durationMinutes.toDouble(),
+                label: _formatDuration(durationMinutes),
+                onChanged: (value) =>
+                    setState(() => durationMinutes = (value / 30).round() * 30),
+              ),
+            ),
+            Text(_formatDuration(durationMinutes)),
+          ]),
+          Row(children: [
+            const Text('想去地點數'),
+            const SizedBox(width: 16),
+            DropdownButton<int>(
+              value: requestedPlaceCount,
+              items: List.generate(
+                  10,
+                  (index) => DropdownMenuItem(
+                      value: index + 1, child: Text('${index + 1} 個'))),
+              onChanged: (value) {
+                if (value != null) {
+                  setState(() => requestedPlaceCount = value);
+                }
+              },
+            ),
+            const SizedBox(width: 18),
+            const Text('旅遊目的（可多選）'),
+          ]),
+          Wrap(
+            spacing: 4,
+            runSpacing: 0,
+            children: purposes.entries
+                .map((purpose) => FilterChip(
+                      label: Text(purpose.value),
+                      selected: selectedPurposes.contains(purpose.key),
+                      onSelected: (selected) => setState(() {
+                        if (selected) {
+                          selectedPurposes.add(purpose.key);
+                        } else {
+                          selectedPurposes.remove(purpose.key);
+                        }
+                      }),
+                    ))
+                .toList(),
+          ),
+        ],
+      );
+
+  Widget _placeTile(Map<String, dynamic> place) {
+    final scores = place['scores'] as Map<String, dynamic>;
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 3),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('${place['sequence']}. ${place['name']}',
+              style: const TextStyle(fontWeight: FontWeight.w600)),
+          Text('步行 ${place['travel_minutes']} 分鐘 · 停留約 '
+              '${place['visit_minutes']} 分鐘 · 符合度 ${place['relevance_score']}'),
+          Wrap(
+            spacing: 10,
+            children: purposes.entries
+                .map((purpose) =>
+                    Text('${purpose.value} ${scores[purpose.key]}'))
+                .toList(),
+          ),
+          if (place['opening_hours'] != null)
+            Text('資料中的開放時間：${place['opening_hours']}'),
+          if (place['website'] != null)
+            Text('網站：${place['website']}',
+                maxLines: 1, overflow: TextOverflow.ellipsis),
+        ]),
+      ),
+    );
+  }
+
+  String _formatDuration(int minutes) => minutes % 60 == 0
+      ? '${minutes ~/ 60} 小時'
+      : '${minutes ~/ 60} 小時 ${minutes % 60} 分鐘';
+
+  Widget _mapPage() => Stack(
+        children: [
+          FlutterMap(
+            options: MapOptions(
+              initialCenter: const LatLng(22.192, 113.539),
+              initialZoom: 13,
+              onTap: (_, position) => _selectMapPoint(position),
+            ),
+            children: [
+              TileLayer(
+                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  userAgentPackageName: 'com.example.macau_navigation'),
+              if (routeLines.isNotEmpty) PolylineLayer(polylines: routeLines),
+              MarkerLayer(markers: [
+                _pin(startPosition, '起點', Colors.green),
+                if (tourMode)
+                  ...recommendedPlaces.map((place) => _visitPin(place))
+                else
+                  _pin(endPosition, '終點', Colors.red),
+              ]),
+            ],
+          ),
+          Positioned(
+            top: 8,
+            left: 8,
+            right: 8,
+            child: Card(
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                child: Text(
+                  '下方｜地圖與路線　點擊地圖設定${tourMode || selectingStart ? '起點' : '終點'}',
+                ),
+              ),
+            ),
+          ),
+          if (routeOptions.length > 1)
+            Positioned(
+              top: 52,
+              left: 8,
+              right: 8,
+              child: SizedBox(
+                height: 48,
+                child: ListView(
+                  scrollDirection: Axis.horizontal,
+                  children: List.generate(routeOptions.length, (index) {
+                    final properties = routeOptions[index]['properties']
+                        as Map<String, dynamic>;
+                    final label = properties['option_label'] as String? ??
+                        '方案 ${index + 1}';
+                    final minutes =
+                        ((properties['total_time'] as num).toDouble() / 60)
+                            .ceil();
+                    return Padding(
+                      padding: const EdgeInsets.only(right: 6),
+                      child: ChoiceChip(
+                        label: Text('$label · 約 $minutes 分'),
+                        selected: selectedOptionIndex == index,
+                        onSelected: (_) => setState(() {
+                          selectedOptionIndex = index;
+                          _showRouteOption(routeOptions[index]);
+                        }),
+                      ),
+                    );
+                  }),
+                ),
+              ),
+            ),
+          if (!tourMode && routeInstructions.isNotEmpty)
+            Positioned(
+              bottom: 8,
+              left: 8,
+              right: 8,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 150),
+                child: Card(
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    itemCount: routeInstructions.length,
+                    separatorBuilder: (_, __) => const Divider(height: 1),
+                    itemBuilder: (context, index) =>
+                        _instructionTile(routeInstructions[index]),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      );
+
+  Marker _visitPin(Map<String, dynamic> place) {
+    final number = place['sequence'] as int;
+    final color = Colors.primaries[(number - 1) % Colors.primaries.length];
+    return Marker(
+      point: LatLng(
+          (place['lat'] as num).toDouble(), (place['lon'] as num).toDouble()),
+      width: 80,
+      height: 68,
+      alignment: Alignment.topCenter,
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+          decoration: BoxDecoration(
+              color: Colors.white, borderRadius: BorderRadius.circular(4)),
+          child: Text('$number. ${place['name']}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+        ),
+        Icon(Icons.location_on, color: color, size: 40),
+      ]),
+    );
+  }
 
   Widget _instructionTile(Map<String, dynamic> instruction) {
     final distance = (instruction['distance'] as num?)?.toDouble() ?? 0;

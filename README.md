@@ -1,4 +1,4 @@
-# Macau Adaptive Travel Navigation System
+# Smart Navigation
 
 A Python (FastAPI) + Flutter adaptive travel navigation system for Macau with:
 - Natural language intent parsing (Qwen3 API compatible)
@@ -14,13 +14,15 @@ A Python (FastAPI) + Flutter adaptive travel navigation system for Macau with:
 │   ├── graph_builder.py     # OSMnx graph loading and offline fallback graph
 │   ├── router.py            # Adaptive shortest-path routing
 │   ├── transit.py           # Walking-to-bus and bus-transfer routing
+│   ├── places.py            # Public-attribute scores and tour planning
 │   ├── data/
 │   │   └── macau_bus_routes.json # Bus stop sequences and matched coordinates
+│   │   └── macau_places.json     # HOTOSM/OSM cultural and food places
 │   ├── test_system.py       # Backend smoke tests
 │   └── requirements.txt     # Backend dependencies
 ├── frontend/
 │   ├── pubspec.yaml         # Flutter dependencies
-│   └── lib/main.dart        # Flutter map, route and chat interface
+│   └── lib/main.dart        # Flutter map, tour planner, and navigation UI
 ```
 
 ## Backend API Endpoints
@@ -28,6 +30,8 @@ A Python (FastAPI) + Flutter adaptive travel navigation system for Macau with:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check |
+| `/places` | GET | Browse places and their four purpose scores |
+| `/tour/plan` | POST | Select places and order a timed tour |
 | `/route/plan` | POST | Plan route with preferences |
 | `/ai/parse_intent` | POST | Parse natural language to structured params |
 | `/route/update` | POST | Dynamic re-routing for GPS deviation/weather |
@@ -52,6 +56,50 @@ Thirteen stop codes currently have no coordinate match and are skipped as
 intermediate boarding points. Transit times are estimates and do not use live
 arrival schedules or vehicle positions. Map data attribution: © OpenStreetMap
 contributors.
+
+### Personalized place tours
+
+The app's upper section lets users set a starting point, available total time,
+requested place count, and one or more purposes (culture, food, architecture,
+history). The lower section shows the resulting walking route on the map. The
+planner chooses nearby places with the strongest combined purpose match while
+keeping estimated travel plus visit time within the selected budget.
+
+Each place displays a separate 0–100 match score for all four purposes. These
+are transparent relevance scores derived from OpenStreetMap tags such as
+`tourism`, `amenity`, `historic`, `heritage`, and `cuisine`; they are not
+crowd-sourced ratings or claims of quality. A zero means the bundled source has
+no matching tag. The cultural source is the supplied HOTOSM GeoPackage
+(OpenStreetMap snapshot 2026-08-07); restaurant, cafe, and food-court records
+were queried from the public Nominatim API on 2026-09-29. Opening-hours fields
+are shown when present but are not guaranteed to be current or checked against
+the travel time. Visit lengths and walking times are estimates, and the planner
+does not use live traffic, business schedules, reviews, or opening status.
+
+The exported places and derived attributes are distributed under ODbL 1.0.
+Attribution: © OpenStreetMap contributors; cultural layer exported by HOTOSM.
+Coverage is limited to the supplied Macao bounding box and depends on public
+map data completeness.
+The time budget includes estimated walking between selected stops and estimated
+visit time at each stop; the itinerary ends at the last selected place and does
+not include a return trip to the start.
+
+`POST /tour/plan` accepts `start_lat`, `start_lon`, `duration_minutes` (30–720),
+`place_count` (1–10), and a non-empty list of `purposes` (`culture`, `food`,
+`architecture`, `history`). The response includes the ordered places with all
+four scores, estimated travel/visit time, and a GeoJSON walking leg for each
+stop.
+
+The current deterministic score rules use the strongest matching OpenStreetMap
+tag per category: culture recognizes museums (96), galleries (90), arts centres
+(94), theatres (86), attractions (82), artwork (78), and worship places (75);
+food recognizes restaurants (94), cafes (82), food courts (78), and fast food
+(62), with up to 6 additional points when cuisine is tagged; architecture
+recognizes historic buildings, forts, ruins, and gates (96), heritage entries
+(90), monuments and memorials (84), and worship places (72); history recognizes
+heritage entries (100) and historic ruins/forts/monuments (94–100), memorials
+(90), and historic buildings (78). These are hand-defined tag-match weights,
+not review sentiment or an AI-generated assessment.
 
 ### Route Plan Request
 ```json
@@ -123,7 +171,7 @@ backend with `--host 0.0.0.0`, and allow port 8000 through the computer firewall
 
 ## Release downloads
 
-Push a version tag such as `v1.3.2` to build Windows x64, Linux x64, Intel
+Push a version tag such as `v1.4.0` to build Windows x64, Linux x64, Intel
 macOS (x86_64), Android ARM, and Android x86_64 APK packages in GitHub Actions.
 The workflow publishes all five files as assets on a GitHub Release. The app
 requires the FastAPI backend to be running; the release contains the Flutter

@@ -18,6 +18,71 @@ def test_health() -> None:
     assert health["graph_loaded"] is True
     assert health["transit_loaded"] is True
     assert health["bus_route_count"] >= 100
+    assert health["place_count"] >= 400
+
+
+def test_places_have_evidence_based_scores_for_all_purposes() -> None:
+    client = TestClient(app)
+    vectors = set()
+    for purpose in ("culture", "food", "architecture", "history"):
+        response = client.get("/places", params={"purpose": purpose, "limit": 1})
+        assert response.status_code == 200
+        assert response.json()["total"] > 0
+        place = response.json()["places"][0]
+        assert place["scores"][purpose] > 0
+        assert set(place["scores"]) == {
+            "culture",
+            "food",
+            "architecture",
+            "history",
+        }
+        vectors.add(tuple(place["scores"][category] for category in (
+            "culture",
+            "food",
+            "architecture",
+            "history",
+        )))
+        assert response.json()["metadata"]["attribution"]
+    assert len(vectors) > 1
+
+
+def test_tour_plan_respects_selected_purpose_count_and_time_budget() -> None:
+    response = TestClient(app).post(
+        "/tour/plan",
+        json={
+            "start_lat": 22.192,
+            "start_lon": 113.539,
+            "duration_minutes": 180,
+            "place_count": 3,
+            "purposes": ["food"],
+        },
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert 1 <= len(result["places"]) <= 3
+    assert result["summary"]["used_minutes"] <= 180
+    assert result["summary"]["planned_places"] == len(result["places"])
+    assert len(result["geojson"]["features"]) == len(result["places"])
+    assert all(place["scores"]["food"] > 0 for place in result["places"])
+    assert [place["sequence"] for place in result["places"]] == [1, 2, 3][
+        : len(result["places"])
+    ]
+
+
+def test_tour_plan_rejects_duplicate_purposes() -> None:
+    response = TestClient(app).post(
+        "/tour/plan",
+        json={
+            "start_lat": 22.192,
+            "start_lon": 113.539,
+            "duration_minutes": 120,
+            "place_count": 2,
+            "purposes": ["history", "history"],
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_night_bus_routes_are_limited_to_midnight_service_hours() -> None:
