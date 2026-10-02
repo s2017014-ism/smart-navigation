@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from . import graph_builder
 from . import main as navigation_api
 from .main import RouteRequest, app, transit_dataset
-from .router import path_coordinates
+from .router import haversine_m, path_coordinates
 from .transit import (
     available_transit_graph,
     build_transit_graph,
@@ -22,7 +22,7 @@ def test_load_graph_uses_graphml_without_osmnx(tmp_path: Path, monkeypatch) -> N
     graph.add_edge(
         "start",
         "end",
-        length=100,
+        length="100",
         geometry="LINESTRING (113.5 22.2, 113.55 22.25, 113.6 22.3)",
     )
     graph_path = tmp_path / "network.graphml"
@@ -34,6 +34,13 @@ def test_load_graph_uses_graphml_without_osmnx(tmp_path: Path, monkeypatch) -> N
     assert loaded_graph.number_of_nodes() == 2
     assert loaded_graph.number_of_edges() == 1
     assert loaded_graph.nodes["start"]["x"] == 113.5
+    assert isinstance(loaded_graph.nodes["start"]["x"], float)
+    edge = loaded_graph["start"]["end"][0]
+    assert edge["length"] == 100.0
+    assert isinstance(edge["length"], float)
+    assert nx.shortest_path(
+        loaded_graph, "start", "end", weight="length"
+    ) == ["start", "end"]
     assert path_coordinates(loaded_graph, ["start", "end"]) == [
         [113.5, 22.2],
         [113.55, 22.25],
@@ -203,7 +210,30 @@ def test_route_between_points_snapped_to_same_node_has_nonzero_distance(
     ]
 
 
-def test_bus_route_uses_attached_route_data() -> None:
+def test_bus_route_uses_attached_route_data(monkeypatch) -> None:
+    monkeypatch.setattr(graph_builder, "ox", None)
+    graphml_graph = graph_builder.load_graph(navigation_api.GRAPH_PATH)
+    monkeypatch.setattr(navigation_api, "graph", graphml_graph)
+    monkeypatch.setattr(
+        navigation_api,
+        "stop_graph_nodes",
+        {code: str(node) for code, node in navigation_api.stop_graph_nodes.items()},
+    )
+
+    def nearest_graphml_node(lat: float, lon: float) -> str:
+        return min(
+            graphml_graph.nodes,
+            key=lambda node: haversine_m(
+                (lat, lon),
+                (
+                    float(graphml_graph.nodes[node]["y"]),
+                    float(graphml_graph.nodes[node]["x"]),
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(navigation_api, "nearest_node", nearest_graphml_node)
+
     route = next(
         route
         for route in transit_dataset.routes

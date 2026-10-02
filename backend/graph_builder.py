@@ -36,12 +36,28 @@ def build_fallback_graph() -> nx.MultiDiGraph:
     return graph
 
 
+def _parse_graphml_number(value: object) -> object:
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return value
+    return value
+
+
 def load_graph(path: Path) -> nx.MultiDiGraph:
     if path.exists():
         if ox is not None:
             return ox.load_graphml(path)
         graph = nx.read_graphml(path, force_multigraph=True)
+        for _, data in graph.nodes(data=True):
+            for attribute in ("x", "y", "elevation"):
+                if attribute in data:
+                    data[attribute] = _parse_graphml_number(data[attribute])
         for _, _, data in graph.edges(data=True):
+            for attribute in ("length", "slope", "bearing", "speed_kph"):
+                if attribute in data:
+                    data[attribute] = _parse_graphml_number(data[attribute])
             geometry = data.get("geometry")
             if isinstance(geometry, str):
                 data["geometry"] = wkt.loads(geometry)
